@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>App Demo — SRE Lab</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background: #0f1117;
+            color: #e2e8f0;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 24px;
+            padding: 32px;
+        }
+
+        h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+        }
+
+        /* Cor muda por ambiente — facilita visualizar onde você está */
+        .env-badge {
+            font-size: 0.85rem;
+            font-weight: 700;
+            padding: 4px 16px;
+            border-radius: 999px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .env-dev {
+            background: #1a3a2a;
+            color: #4ade80;
+            border: 1px solid #4ade80;
+        }
+
+        .env-hom {
+            background: #3a2a1a;
+            color: #fb923c;
+            border: 1px solid #fb923c;
+        }
+
+        .env-prod {
+            background: #3a1a1a;
+            color: #f87171;
+            border: 1px solid #f87171;
+        }
+
+        .card {
+            background: #1e2130;
+            border: 1px solid #2d3148;
+            border-radius: 16px;
+            padding: 32px 40px;
+            width: 100%;
+            max-width: 560px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding-bottom: 16px;
+            border-bottom: 1px solid #2d3148;
+        }
+
+        .row:last-child {
+            border-bottom: none;
+            padding-bottom: 0;
+        }
+
+        .label {
+            font-size: 0.8rem;
+            color: #64748b;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .value {
+            font-size: 1rem;
+            font-weight: 600;
+            font-family: 'Courier New', monospace;
+            color: #e2e8f0;
+        }
+
+        .status-ok {
+            color: #4ade80;
+        }
+
+        .status-fail {
+            color: #f87171;
+        }
+
+        button {
+            margin-top: 8px;
+            padding: 12px 24px;
+            border-radius: 8px;
+            border: 1px solid #4f46e5;
+            background: #1e1b4b;
+            color: #a5b4fc;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        button:hover {
+            background: #4f46e5;
+            color: #fff;
+        }
+
+        .timestamp {
+            font-size: 0.75rem;
+            color: #475569;
+            text-align: center;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h1>SRE Lab — App Demo</h1>
+    <span id="env-badge" class="env-badge">carregando...</span>
+
+    <div class="card">
+        <div class="row">
+            <span class="label">Versão</span>
+            <span class="value" id="version">—</span>
+        </div>
+        <div class="row">
+            <span class="label">Ambiente</span>
+            <span class="value" id="environment">—</span>
+        </div>
+        <div class="row">
+            <span class="label">Pod (hostname)</span>
+            <span class="value" id="hostname">—</span>
+        </div>
+        <div class="row">
+            <span class="label">Health</span>
+            <span class="value" id="health">—</span>
+        </div>
+        <button onclick="fetchInfo()">↻ Refresh</button>
+    </div>
+
+    <p class="timestamp" id="timestamp">—</p>
+
+    <script>
+        async function fetchInfo() {
+            try {
+                // Busca info do pod
+                const res = await fetch('/api/info')
+                const data = await res.json()
+
+                document.getElementById('version').textContent = data.version
+                document.getElementById('environment').textContent = data.environment
+                document.getElementById('hostname').textContent = data.hostname
+                document.getElementById('timestamp').textContent = 'Última atualização: ' + data.timestamp
+
+                // Aplica a cor certa no badge do ambiente
+                const badge = document.getElementById('env-badge')
+                badge.textContent = data.environment
+                badge.className = 'env-badge env-' + data.environment
+
+                // Busca o health separado
+                const healthRes = await fetch('/api/health')
+                const healthData = await healthRes.json()
+                const healthEl = document.getElementById('health')
+                healthEl.textContent = healthData.status
+                healthEl.className = healthData.status === 'ok' ? 'value status-ok' : 'value status-fail'
+
+            } catch (err) {
+                document.getElementById('health').textContent = 'erro'
+                document.getElementById('health').className = 'value status-fail'
+                console.error(err)
+            }
+        }
+
+        // Carrega ao abrir a página
+        fetchInfo()
+
+        // Atualiza a cada 5 segundos automaticamente
+        // Isso é ouro para visualizar Rolling Update e Canary
+        setInterval(fetchInfo, 5000)
+    </script>
+
+</body>
+
+</html>
