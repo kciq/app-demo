@@ -1,0 +1,192 @@
+name: CI - app-demo
+
+# Dispara quando:
+on:
+    push:
+        branches: [ "main" ] # push direto na main
+    pull_request:
+        branches: [ "main" ] # qualquer PR apontado para main
+
+# Permissões necessárias para o workflow, sempre pensando no menor privilegio.
+permissions:
+    contents: read # Ler o codigo
+    packages: write # Enviar (push) a imagem para o GitHub Container Registry (GHCR)
+    security-events: write # Publicar resultados de análise de vulnerabilidade (CodeQL)
+
+# Job de Lint e detecção de secrets
+jobs:
+    # Lint e segunra do codigo roda primeito, pois falhja mais rapido e economiza recursos e nao tem o problema de buildar a imagem
+    lint-and-secrets:
+        name: Lint + Secret Detection
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0 # Historico completo para analise de vulnerabilidades pro Gitleaks.
+
+            # Detecta secrets expostas no codigo, como tokens, passwords, API keys
+            # Em caso de encontrar a pipeline e interrompida nesse momento.
+            - name: Gitleaks Scan detectar secrets
+              uses: gitleaks/gitleaks-action@v2
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+            # Configura o Go para o proximo Step
+            - name: Setup Go
+              uses: actions/setup-go@v6
+              with:
+                  go-version: "1.26" # Versao do Go a ser utilizada
+
+            # Verifica formataao e erros basicos de codigo Go
+            - name: Go vet
+              run: go vet ./...
+
+    # Job de testes unitarios
+    tests:
+        name: Unit Tests
+        runs-on: ubuntu-latest
+        needs: lint-and-secrets # So executa se o lint-and-secrets passar com sucesso
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Setup Go
+              uses: actions/setup-go@v6
+              with:
+                  go-version: "1.26" # Versao do Go a ser utilizada
+
+            - name: Rodar testes
+              run: go test ./... -v -coverprofile=coverage.out
+
+            - name: Checar cobertura minima
+              run: |
+                  COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | tr -d '%')
+                  echo "Cobertura: ${COVERAGE}%"
+                  if (( $(echo "$COVERAGE < 0" | bc -l) )); then
+                    echo "Cobertura abaixo do mínimo"
+                    exit 1
+                  fi
+
+            - name: Upload coverage
+              uses: actions/upload-artifact@v4
+              with:
+                  name: coverage-report
+                  path: coverage.out
+
+    # Build + Trivy 
+    build-and-scan:
+        name: Build + Security Scan
+        runs-on: ubuntu-latest
+        needs: tests # So executa se os testes passarem com sucesso
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+              # Extrai metadados para tagging da imagem
+              # Gera tags automaticas: sha do commit, branch + latest
+            - name: Docker metadata
+              id: meta
+              uses: docker/metadata-action@v5
+              with:
+                  images: ghrc.io/${{ github.repository_owner }}/app-demo
+                  tags: |
+                      type=sha,prefix=sha-
+                      type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+            - name: Login no GHCR
+              uses: docker/login-action@v3
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            # Configurar buildx, novo builder do docker com suporte a cache
+            - name: Setup Docker buildx
+              uses: docker/setup-buildx-action@v3
+
+            # Scan filesystem ANTES de buildar a imagem
+            - name: Trivy - scan filesystem
+              uses: aquasecurity/trivy-action@master
+              with:
+                  scan-type: fs
+                  scan-ref: .
+                  severity: CRITICAL,HIGH
+                  exit-code: 1 # falha a pipeline se achar CRITICAL ou HIGH
+                  format: sarif
+                  output: trivy-fs.sarif
+
+            # Build da imagem, porem sem o push
+            - name: Docker build
+              uses: docker/build-push-action@v5
+              with:
+                  context: .
+                  push: false # so build, push vem depois do scan
+                  tags: ${{ steps.meta.outputs.tags }}
+                  cache-from: type=gha # cache do Github Actions, economiza tempo e recursos
+                  cache-to: type=gha,mode=max
+                  load: true # Carrega a imagem localmente para o proximo step
+
+            # Scan na imagem que acabou de ser buildada
+            # Detecta CVEs nas libs do S>O dentro da imagem
+            - name: Trivy - scan image
+              uses: aquasecurity/trivy-action@master
+              with:
+                  scan-type: image
+                  image-ref: ghcr.io/${{ github.repository_owner }}/app-demo:latest
+                  severity: CRITICAL,HIGH
+                  exit-code: 1
+                  format: sarif
+                  output: trivy-image.sarif
+
+            # Publica os resultados de seguranca na aba se Security do Github
+            - name: Upload resultados Trivy
+              uses: github/codeql-action/upload-sarif@v3
+              if: always() # executa mesmo se os steps anteriores falharem
+              with:
+                  sarif_file: |
+                      trivy-fs.sarif
+
+            # Push da imagem, ira ser feito se tudo acima passou com SUCESSO.
+            - name: Docker push
+              uses: docker/build-push-action@v5
+              with:
+                  context: .
+                  push: true
+                  tags: ${{ steps.meta.outputs.tags }}
+                  cache-from: type=gha
+                  cache-to: type=gha,mode=max
+
+    updata-gitops:
+        name: Update GitOps
+        runs-on: ubuntu-latest
+        needs: build-and-scan # So executa se o build-and-scan passar com sucesso
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push' # So executa se for push na main
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+              with:
+                  repository: ${{ github.repository_owner }}/projeto-gitops
+                  token: ${{ secrets.GIT_TOKEN }} # PAT com acesso ao repo gitops
+
+            # Pega o SHA do commit atual para usar como tag da imagem
+            - name: Extrair image tag
+              id: tag
+              run: echo "tag=sha-$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+
+            # Atualiza a imagem da tag do kustomization dev
+            # ArgoCD vai dectar essa mudanca e fazer o deploy automaticamente
+            - name: Atualizar tag no dev
+              run: |
+                  cd manifests/everlays/dev
+                  kustomize edit set image ghcr.io/${{ github.repository_owner }}/app-demo=ghcr.io/${{ github.repository_owner }}/app-demo:${{ steps.tag.outputs.tag }}
+
+            - name: Commit e push
+              run: |
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+                  git add .
+                  git commit -m "chore(dev): update app-demo to ${{ steps.tag.outputs.tag }}"
+                  git push
