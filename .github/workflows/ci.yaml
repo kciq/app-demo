@@ -166,7 +166,9 @@ jobs:
             - name: Atualizar tag no dev
               run: |
                   cd manifests/overlays/dev
-                  kustomize edit set image ghcr.io/${{ github.repository_owner }}/app-demo=ghcr.io/${{ github.repository_owner }}/app-demo:${{ steps.tag.outputs.tag }}
+                  # Atualiza só a linha newTag usando sed
+                  # Não usa kustomize edit para não sobrescrever o arquivo inteiro
+                  sed -i "s|newTag:.*|newTag: ${{ steps.tag.outputs.tag }}|g" kustomization.yaml
 
             - name: Commit e push
               run: |
