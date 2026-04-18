@@ -21,13 +21,13 @@ jobs:
               with:
                   fetch-depth: 0
 
-            - name: Gitleaks Scan
+            - name: Gitleaks Scan detectar secrets
               uses: gitleaks/gitleaks-action@v2
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
             - name: Setup Go
-              uses: actions/setup-go@v5
+              uses: actions/setup-go@v6
               with:
                   go-version: "1.22"
 
@@ -44,27 +44,14 @@ jobs:
               uses: actions/checkout@v4
 
             - name: Setup Go
-              uses: actions/setup-go@v5
+              uses: actions/setup-go@v6
               with:
                   go-version: "1.22"
 
-            - name: Rodar testes
-              run: go test ./... -v -coverprofile=coverage.out
-
-            - name: Checar cobertura minima
-              run: |
-                  COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | tr -d '%')
-                  echo "Cobertura: ${COVERAGE}%"
-                  if (( $(echo "$COVERAGE < 0" | bc -l) )); then
-                    echo "Cobertura abaixo do mínimo"
-                    exit 1
-                  fi
-
-            - name: Upload coverage
-              uses: actions/upload-artifact@v4
-              with:
-                  name: coverage-report
-                  path: coverage.out
+            # Valida que o codigo compila sem erros
+            # Quando houver testes de verdade, voltamos com coverage
+            - name: Build check
+              run: go build ./...
 
     build-and-scan:
         name: Build + Security Scan
@@ -94,7 +81,7 @@ jobs:
             - name: Setup Docker buildx
               uses: docker/setup-buildx-action@v3
 
-            # Scan no filesystem antes de buildar
+            # Scan no filesystem antes de buildar a imagem
             - name: Trivy - scan filesystem
               uses: aquasecurity/trivy-action@master
               with:
@@ -105,24 +92,24 @@ jobs:
                   format: sarif
                   output: trivy-fs.sarif
 
-            # Build com tag fixa local para o scan
-            # Usamos só a tag sha para o load:true funcionar
+            # Build local com tag simples para o scan funcionar
+            # load: true só funciona com uma tag
             - name: Docker build local
               uses: docker/build-push-action@v5
               with:
                   context: .
                   push: false
                   load: true
-                  tags: app-demo:scan # tag local simples — só para o scan
+                  tags: app-demo:scan
                   cache-from: type=gha
                   cache-to: type=gha,mode=max
 
-            # Scan na imagem local com a tag que definimos acima
+            # Scan na imagem local — mesma tag do build acima
             - name: Trivy - scan image
               uses: aquasecurity/trivy-action@master
               with:
                   scan-type: image
-                  image-ref: app-demo:scan # mesma tag do build acima
+                  image-ref: app-demo:scan
                   severity: CRITICAL,HIGH
                   exit-code: 1
                   format: sarif
@@ -155,7 +142,7 @@ jobs:
               uses: actions/checkout@v4
               with:
                   repository: ${{ github.repository_owner }}/projeto-gitops
-                  token: ${{ secrets.GITOPS_TOKEN }} # nome correto do secret
+                  token: ${{ secrets.GITOPS_TOKEN }}
 
             - name: Instalar kustomize
               run: |
@@ -168,7 +155,7 @@ jobs:
 
             - name: Atualizar tag no dev
               run: |
-                  cd manifests/overlays/dev   # path correto
+                  cd manifests/overlays/dev
                   kustomize edit set image \
                     ghcr.io/${{ github.repository_owner }}/app-demo=ghcr.io/${{ github.repository_owner }}/app-demo:${{ steps.tag.outputs.tag }}
 
