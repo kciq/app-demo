@@ -140,15 +140,52 @@ jobs:
                   tags: ${{ steps.meta.outputs.tags }}
                   cache-from: type=gha
                   cache-to: type=gha,mode=max
-
-    updata-gitops:
-        name: Update GitOps
+    deploy-dev:
+        name: Deploy DEV
         runs-on: ubuntu-latest
         needs: build-and-scan
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        # Vincula ao enviroment development - sem aprovacao, automatico
+        environment:
+            name: development
+            url: http://app-demo.app-demo-dev.svc.cluster.local
+        steps:
+            - name: Checkout GitOps repository
+              uses: actions/checkout@v4
+              with:
+                  repository: ${{ github.repository_owner }}/projeto-gitops
+                  token: ${{ secrets.GITOPS_TOKEN }}
+            - name: Instalar kustomize
+              run: |
+                  curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+                  sudo mv kustomize /usr/local/bin/
+            - name: Extrair image tag
+              id: tag
+              run: echo "tag=sha-$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+            - name: Atualizar tag no dev
+              run: |
+                  cd manifests/overlays/dev
+                  sed -i "s|newTag:.*|newTag: ${{ steps.tag.outputs.tag }}|g" kustomization.yaml
+            - name: Commit e push
+              run: |
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+                  git add .
+                  git commit -m "chore(dev): update app-demo to ${{ steps.tag.outputs.tag }}"
+                  git push
+
+    deploy-hom:
+        name: Deploy HOM
+        runs-on: ubuntu-latest
+        needs: deploy-dev
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        # Vincula ao environment homogation - requer aprovacao humana
+        environment:
+            name: homologation
+            url: http://app-demo.app-demo-hom.svc.cluster.local
 
         steps:
-            - name: Checkout
+            - name: Checkout GitOps repository
               uses: actions/checkout@v4
               with:
                   repository: ${{ github.repository_owner }}/projeto-gitops
@@ -163,11 +200,9 @@ jobs:
               id: tag
               run: echo "tag=sha-$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
 
-            - name: Atualizar tag no dev
+            - name: Atualizar tag no hom
               run: |
-                  cd manifests/overlays/dev
-                  # Atualiza só a linha newTag usando sed
-                  # Não usa kustomize edit para não sobrescrever o arquivo inteiro
+                  cd manifests/overlays/hom
                   sed -i "s|newTag:.*|newTag: ${{ steps.tag.outputs.tag }}|g" kustomization.yaml
 
             - name: Commit e push
@@ -175,5 +210,44 @@ jobs:
                   git config user.name "github-actions[bot]"
                   git config user.email "github-actions[bot]@users.noreply.github.com"
                   git add .
-                  git commit -m "chore(dev): update app-demo to ${{ steps.tag.outputs.tag }}"
+                  git commit -m "chore(hom): update app-demo to ${{ steps.tag.outputs.tag }}"
+                  git push
+
+    deploy-prod:
+        name: Deploy PROD
+        runs-on: ubuntu-latest
+        needs: deploy-hom
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        # Vincula ao environment production - requer aprovacao humana
+        environment:
+            name: production
+            url: http://app-demo.app-demo-prod.svc.cluster.local
+
+        steps:
+            - name: Checkout GitOps repository
+              uses: actions/checkout@v4
+              with:
+                  repository: ${{ github.repository_owner }}/projeto-gitops
+                  token: ${{ secrets.GITOPS_TOKEN }}
+
+            - name: Instalar kustomize
+              run: |
+                  curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+                  sudo mv kustomize /usr/local/bin/
+
+            - name: Extrair image tag
+              id: tag
+              run: echo "tag=sha-$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+
+            - name: Atualizar tag no prod
+              run: |
+                  cd manifests/overlays/prod
+                  sed -i "s|newTag:.*|newTag: ${{ steps.tag.outputs.tag }}|g" kustomization.yaml
+
+            - name: Commit e push
+              run: |
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+                  git add .
+                  git commit -m "chore(prod): update app-demo to ${{ steps.tag.outputs.tag }}"
                   git push
